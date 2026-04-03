@@ -1,146 +1,162 @@
-"""ICPSR authentication — session persistence + email login."""
+"""ICPSR authentication — wait for manual login, don't fight Cloudflare."""
 
 import time
-from datetime import datetime, timedelta
-from config import EMAIL_LOGIN, PASSWORD, SESSION_FILE, SESSION_MAX_AGE_HOURS
 
 
-def session_file_valid():
-    """Check if session.json exists and is recent enough."""
-    if not SESSION_FILE.exists():
-        return False
-    age = datetime.now().timestamp() - SESSION_FILE.stat().st_mtime
-    return age < SESSION_MAX_AGE_HOURS * 3600
-
-
-def save_session(context):
-    """Save browser session state to disk."""
-    context.storage_state(path=str(SESSION_FILE))
-    print(f"  💾 Session saved to {SESSION_FILE.name}")
-
-
-def is_login_page(page):
-    """Check if the current page is an ICPSR login page."""
-    url = page.url.lower()
-    if "login" in url or "signin" in url or "sign-in" in url:
-        return True
+def is_captcha_page(page):
+    """Check if the current page has a CAPTCHA / 'verify you are human' challenge."""
     try:
         content = page.content().lower()
-        return "log in with" in content or "sign in with email" in content
+        return any(phrase in content for phrase in [
+            "verify you are human",
+            "checking your browser",
+            "captcha",
+            "challenge-platform",
+            "cf-turnstile",
+            "hcaptcha",
+        ])
     except Exception:
         return False
 
 
-def login_with_email(page):
-    """Automate the ICPSR email login flow."""
-    if not EMAIL_LOGIN or not PASSWORD:
-        print("  ❌ No EMAIL_LOGIN/PASSWORD in .env — cannot auto-login")
+def is_logged_out(page):
+    """Check if we're logged out. Looks for login page OR 'Log In' in nav bar."""
+    url = page.url.lower()
+    if "login" in url or "signin" in url or "sign-in" in url:
+        return True
+    try:
+        content = page.content()
+        lower = content.lower()
+        # Check for login page content
+        if "log in with" in lower or "sign in with email" in lower:
+            return True
+        # Check for "Log In/Create Account" link in nav bar (logged out state)
+        if "log in/create account" in lower or "log in / create account" in lower:
+            return True
+        # Check for My Account link (logged in state) — if missing, we're logged out
+        if "my account" not in lower and "myaccount" not in lower:
+            # Only flag as logged out if we're actually on an openicpsr page
+            if "openicpsr.org" in url:
+                return True
+        return False
+    except Exception:
         return False
 
-    print(f"  🔑 Logging in as {EMAIL_LOGIN}...")
 
+def wait_for_human(page, reason="action needed", timeout_hours=12):
+    """Wait for the user to do something in the browser (login, CAPTCHA, etc.).
+
+    Checks every 30 seconds. Waits up to timeout_hours.
+    Prints a reminder every 10 minutes.
+    """
+    checks = timeout_hours * 120  # 30-sec intervals
+    print(f"\n    >>> {reason} — please act in the Chrome window <<<", flush=True)
+    print(f"    Checking every 30s, will wait up to {timeout_hours}h...", flush=True)
+
+    for i in range(checks):
+        time.sleep(30)
+
+        # Print reminder every 10 min
+        if i > 0 and i % 20 == 0:
+            minutes = (i * 30) // 60
+            print(f"    Still waiting... ({minutes} min elapsed)", flush=True)
+
+        try:
+            # Refresh to check current state
+            if i % 4 == 0:  # reload every 2 min to pick up login changes
+                try:
+                    page.reload(wait_until="networkidle", timeout=15000)
+                except Exception:
+                    pass
+
+            if not is_captcha_page(page) and not is_logged_out(page):
+                print(f"    Detected login/solve! Resuming...", flush=True)
+                return True
+        except Exception:
+            continue
+
+    print(f"    Gave up waiting after {timeout_hours}h", flush=True)
+    return False
+
+
+def login_with_google(page):
+    """Click 'Sign in with Google' — works if already authenticated in Chrome."""
     try:
-        # Navigate to ICPSR login
+        print("    Attempting Google login...", flush=True)
         page.goto("https://www.openicpsr.org/openicpsr/login", wait_until="networkidle", timeout=30000)
-        time.sleep(2)
+        time.sleep(3)
 
-        # Click "Sign in with email"
-        email_btn = page.query_selector("text=Sign in with email")
-        if email_btn:
-            email_btn.click()
-            page.wait_for_load_state("networkidle", timeout=15000)
-            time.sleep(2)
+        if is_captcha_page(page):
+            if not wait_for_human(page, "CAPTCHA on login page"):
+                return False
 
-        # Fill email
-        email_input = page.query_selector('input[type="email"], input[name="email"], input[id*="email"]')
-        if email_input:
-            email_input.fill(EMAIL_LOGIN)
-        else:
-            # Try any visible text input
-            inputs = page.query_selector_all('input[type="text"]')
-            if inputs:
-                inputs[0].fill(EMAIL_LOGIN)
+        # Click the Google sign-in button
+        google_btn = page.query_selector("text=Sign in with Google")
+        if not google_btn:
+            google_btn = page.query_selector("text=Google")
+        if not google_btn:
+            print("    No Google login button found", flush=True)
+            return False
 
-        # Click next/continue if there's a multi-step flow
-        next_btn = page.query_selector('button:has-text("Next"), button:has-text("Continue"), input[type="submit"]')
-        if next_btn:
-            next_btn.click()
-            page.wait_for_load_state("networkidle", timeout=15000)
-            time.sleep(2)
-
-        # Fill password
-        pw_input = page.query_selector('input[type="password"]')
-        if pw_input:
-            pw_input.fill(PASSWORD)
-
-        # Submit
-        submit_btn = page.query_selector(
-            'button:has-text("Sign in"), button:has-text("Log in"), '
-            'button:has-text("Submit"), input[type="submit"]'
-        )
-        if submit_btn:
-            submit_btn.click()
-        else:
-            pw_input.press("Enter")
-
+        google_btn.click()
+        # Google OAuth may open a popup or redirect — wait for it
+        time.sleep(5)
         page.wait_for_load_state("networkidle", timeout=30000)
         time.sleep(3)
 
-        if is_login_page(page):
-            print("  ❌ Still on login page — credentials may be wrong or flow changed")
-            return False
+        if not is_logged_out(page):
+            print("    Google login successful!", flush=True)
+            return True
 
-        print("  ✅ Login successful!")
-        return True
+        # Google might show account picker — try clicking the first account
+        try:
+            # Look for an email/account in the Google picker
+            account = page.query_selector('[data-email], .lCoei, div[data-identifier]')
+            if account:
+                account.click()
+                time.sleep(3)
+                page.wait_for_load_state("networkidle", timeout=30000)
+                time.sleep(3)
+                if not is_logged_out(page):
+                    print("    Google login successful (picked account)!", flush=True)
+                    return True
+        except Exception:
+            pass
+
+        print("    Google login didn't complete automatically", flush=True)
+        return False
 
     except Exception as e:
-        print(f"  ❌ Login failed: {e}")
+        print(f"    Google login error: {e}", flush=True)
         return False
 
 
 def ensure_logged_in(page, context):
-    """Check if logged in; if not, try session restore then email login."""
-    if not is_login_page(page):
+    """Check if logged in. Try Google auto-login first, then wait for manual."""
+    if is_captcha_page(page):
+        if not wait_for_human(page, "CAPTCHA detected"):
+            return False
+
+    if not is_logged_out(page):
         return True
 
-    print("  🔒 Login required...")
-
-    # Try session restore
-    if session_file_valid():
-        print("  📂 Restoring saved session...")
-        # Can't reload storage_state on existing context, so just try navigating
-        page.goto("https://www.openicpsr.org/openicpsr/", wait_until="networkidle", timeout=30000)
-        time.sleep(2)
-        if not is_login_page(page):
-            print("  ✅ Session restored!")
-            return True
-
-    # Email login
-    if login_with_email(page):
-        save_session(context)
+    # Try Google login (one-click if already authenticated in Chrome)
+    if login_with_google(page):
         return True
 
-    # Manual fallback
-    print("\n  ⚠️  AUTO-LOGIN FAILED — please log in manually in the browser window.")
-    print("     Waiting up to 5 minutes...")
-    for _ in range(60):
-        time.sleep(5)
-        try:
-            page.reload(wait_until="networkidle", timeout=15000)
-        except Exception:
-            pass
-        if not is_login_page(page):
-            print("  ✅ Manual login detected!")
-            save_session(context)
-            return True
-
-    print("  ❌ Gave up waiting for login")
-    return False
+    # Fall back to waiting for manual login
+    return wait_for_human(page, "Auto-login failed — please log in at the Chrome window")
 
 
 def check_session_alive(page, context):
-    """Lightweight session check — auto-re-login if expired."""
-    if not is_login_page(page):
-        return True
-    print("\n  🔒 Session expired mid-crawl...")
-    return ensure_logged_in(page, context)
+    """Lightweight session check mid-crawl."""
+    if is_captcha_page(page):
+        wait_for_human(page, "CAPTCHA mid-crawl")
+
+    if is_logged_out(page):
+        print("    Session expired mid-crawl — trying Google login...", flush=True)
+        if login_with_google(page):
+            return True
+        return wait_for_human(page, "Auto-login failed mid-crawl — please log in")
+
+    return True

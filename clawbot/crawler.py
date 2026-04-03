@@ -11,16 +11,31 @@ def get_search_projects(page, context, page_num):
     start = (page_num - 1) * ROWS_PER_PAGE
     url = f"{SEARCH_URL}?q=&start={start}&ARCHIVE=aea&sort={SEARCH_SORT}&rows={ROWS_PER_PAGE}"
 
-    page.goto(url, wait_until="domcontentloaded", timeout=90000)
-    time.sleep(3)
+    print(f"    Loading: {url}", flush=True)
+    page.goto(url, wait_until="networkidle", timeout=90000)
+    time.sleep(5)
 
     if not check_session_alive(page, context):
         return []
 
     # Re-navigate if bounced away
     if "search/aea/studies" not in page.url:
-        page.goto(url, wait_until="domcontentloaded", timeout=90000)
-        time.sleep(3)
+        print(f"    Bounced to: {page.url} — retrying", flush=True)
+        page.goto(url, wait_until="networkidle", timeout=90000)
+        time.sleep(5)
+
+    # Wait for search results to actually render
+    try:
+        page.wait_for_selector("a[href*='/openicpsr/project/']", timeout=15000)
+    except Exception:
+        print(f"    No project links found on page. URL: {page.url}", flush=True)
+        # Dump a snippet of page text for debugging
+        try:
+            text = page.inner_text("body")[:500]
+            print(f"    Page text: {text[:200]}", flush=True)
+        except Exception:
+            pass
+        return []
 
     links = page.query_selector_all("a[href*='/openicpsr/project/']")
     projects = []

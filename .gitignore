@@ -7,6 +7,7 @@ node_modules/
 .venv/
 session.json
 clawbot/downloads/
+clawbot/browser_profile/
 clawbot/session.json
 clawbot/.env
 download_tracker.json

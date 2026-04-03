@@ -13,7 +13,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 # --- Paths ---
 BASE_DIR = Path(__file__).parent
-DOWNLOAD_DIR = BASE_DIR / "downloads"
+DOWNLOAD_DIR = BASE_DIR / "download_staging"
 SESSION_FILE = BASE_DIR / "session.json"
 TRACKER_CSV = BASE_DIR / "project_log.csv"
 TRACKER_JSON = BASE_DIR / "download_tracker.json"
@@ -33,8 +33,7 @@ MIN_DELAY = 30
 MAX_DELAY = 60
 
 # --- Browser ---
-HEADLESS = False  # Set True for background runs, False to watch/debug
-SESSION_MAX_AGE_HOURS = 24
+CDP_URL = "http://127.0.0.1:9222"  # Chrome remote debugging port
 
 # --- LLM ---
 LLM_MODEL = "claude-sonnet-4-6"
