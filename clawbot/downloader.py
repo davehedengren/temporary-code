@@ -2,14 +2,28 @@
 
 import os
 import time
+import glob
 from playwright.sync_api import TimeoutError as PWTimeout
 from config import DOWNLOAD_DIR
+
+
+def cleanup_chrome_downloads():
+    """Delete Chrome's duplicate downloads from ~/Downloads."""
+    dupes = glob.glob(os.path.expanduser("~/Downloads/*-V1*.zip"))
+    if dupes:
+        for f in dupes:
+            try:
+                os.remove(f)
+            except Exception:
+                pass
+        print(f"    Cleaned {len(dupes)} Chrome duplicate downloads", flush=True)
 
 
 def download_project(page, project_id):
     """Download project ZIP, handling Terms of Use interstitial.
 
-    Waits for download to fully complete before returning.
+    Strategy: click download, if Terms appear accept them, then try download
+    again. Use expect_download to capture the file.
     Returns file size in MB, or 0 on failure.
     """
     DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -21,35 +35,33 @@ def download_project(page, project_id):
             page.goto(project_url, wait_until="networkidle", timeout=60000)
             time.sleep(2)
 
-        # Find download button — try multiple selectors
+        # First attempt: click download, might trigger Terms
         btn = _find_download_button(page)
         if not btn:
             print(f"    No download button found")
             return 0
 
-        btn.click()
-        page.wait_for_load_state("networkidle", timeout=30000)
-        time.sleep(2)
+        # Try to capture download directly (works if terms already accepted)
+        try:
+            with page.expect_download(timeout=15000) as dl_info:
+                btn.click()
+            return _save_download(dl_info.value, project_id)
+        except PWTimeout:
+            pass  # Probably went to Terms page instead
 
-        # Accept Terms if present
+        # Handle Terms of Use
         if "terms" in page.url.lower():
             print(f"    Accepting Terms of Use...")
-            agreed = _click_agree(page)
-            if not agreed:
-                print(f"    Could not find I Agree button")
-                return 0
-
-            # Wait for navigation after agreeing
-            page.wait_for_load_state("networkidle", timeout=30000)
+            _click_agree(page)
             time.sleep(3)
+            page.wait_for_load_state("networkidle", timeout=30000)
+            time.sleep(2)
 
-            # After terms, we usually get redirected back to the project page.
-            # Now click download again — this time it should trigger the actual download.
-            if f"/project/{project_id}/" not in page.url:
-                page.goto(project_url, wait_until="networkidle", timeout=60000)
-                time.sleep(2)
+        # Navigate back to project page
+        page.goto(project_url, wait_until="networkidle", timeout=60000)
+        time.sleep(2)
 
-        # Now try the actual download (terms already accepted)
+        # Second attempt: terms should be accepted now
         btn = _find_download_button(page)
         if not btn:
             print(f"    No download button after terms")
@@ -58,17 +70,11 @@ def download_project(page, project_id):
         try:
             with page.expect_download(timeout=300000) as dl_info:
                 btn.click()
-                # If we hit terms again, accept them
                 time.sleep(3)
+                # Handle terms appearing again
                 if "terms" in page.url.lower():
                     _click_agree(page)
-            dl = dl_info.value
-            # Wait for download to fully complete
-            path = dl.path()  # blocks until download finishes
-            if path is None:
-                print(f"    Download failed — no file received")
-                return 0
-            return _save_download(dl, project_id)
+            return _save_download(dl_info.value, project_id)
         except PWTimeout:
             print(f"    Download timed out (5 min)")
             return 0
@@ -87,7 +93,6 @@ def _find_download_button(page):
         "button:has-text('DOWNLOAD THIS PROJECT')",
         "button:has-text('Download this project')",
         "a:has-text('Download All')",
-        "a:has-text('download')",
     ]
     for sel in selectors:
         btn = page.query_selector(sel)
@@ -111,8 +116,16 @@ def _click_agree(page):
 
 
 def _save_download(dl, project_id):
-    """Save download to disk. Returns size in MB, or 0 if empty."""
+    """Save download to disk, wait for completion. Returns size in MB, or 0 if empty."""
     dest = str(DOWNLOAD_DIR / f"{project_id}.zip")
+
+    # dl.path() blocks until the download is fully complete
+    print(f"    Waiting for download to complete...", flush=True)
+    path = dl.path()
+    if path is None:
+        print(f"    Download failed — no file received")
+        return 0
+
     dl.save_as(dest)
     size_mb = os.path.getsize(dest) / (1024 * 1024)
     if size_mb < 0.001:
@@ -120,4 +133,15 @@ def _save_download(dl, project_id):
         os.remove(dest)
         return 0
     print(f"    Downloaded {size_mb:.1f} MB -> {dest}")
+
+    # Clean up Chrome's duplicate downloads
+    cleanup_chrome_downloads()
+
+    # Extra pause after large downloads
+    if size_mb > 500:
+        print(f"    Large file ({size_mb:.0f} MB) — extra 10s cooldown", flush=True)
+        time.sleep(10)
+    elif size_mb > 100:
+        time.sleep(5)
+
     return round(size_mb, 2)

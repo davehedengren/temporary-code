@@ -4,16 +4,21 @@ import time
 
 
 def is_captcha_page(page):
-    """Check if the current page has a CAPTCHA / 'verify you are human' challenge."""
+    """Check if the current page is a Cloudflare CAPTCHA challenge.
+
+    Only checks visible text and page title — not full HTML source,
+    which can contain 'captcha' or 'challenge' in scripts/ads on normal pages.
+    """
     try:
-        content = page.content().lower()
-        return any(phrase in content for phrase in [
+        title = (page.title() or "").lower()
+        if "just a moment" in title or "attention required" in title:
+            return True
+        # Check visible body text (first 2000 chars to avoid scanning huge pages)
+        visible = (page.inner_text("body") or "")[:2000].lower()
+        return any(phrase in visible for phrase in [
             "verify you are human",
             "checking your browser",
-            "captcha",
-            "challenge-platform",
-            "cf-turnstile",
-            "hcaptcha",
+            "checking if the site connection is secure",
         ])
     except Exception:
         return False
