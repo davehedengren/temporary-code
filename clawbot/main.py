@@ -22,6 +22,7 @@ from playwright.sync_api import sync_playwright
 import config
 import tracker
 import auth
+from cleanup import cleanup_playwright_artifacts
 import crawler
 import analyzer
 import downloader
@@ -129,6 +130,7 @@ def run():
             state["checked_count"] = len(checked_ids)
             tracker.save_state(state)
             move_to_external()
+            cleanup_playwright_artifacts()
             print(f"  State saved. Resume with: python main.py")
             sys.exit(0)
         signal.signal(signal.SIGINT, shutdown)
@@ -338,6 +340,9 @@ def run():
 
         # Disconnects CDP, leaves Chrome running
         browser.close()
+
+        # Clean up Playwright temp artifacts to avoid filling disk
+        cleanup_playwright_artifacts()
 
 
 if __name__ == "__main__":

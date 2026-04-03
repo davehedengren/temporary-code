@@ -12,6 +12,7 @@ import config
 import tracker
 import downloader
 import auth
+from cleanup import cleanup_playwright_artifacts
 
 
 def get_failed_ids():
@@ -100,6 +101,7 @@ def run():
         print(f"\n{'='*60}")
         print(f"Retry complete: {success}/{len(failed)} recovered")
         browser.close()
+        cleanup_playwright_artifacts()
 
 
 if __name__ == "__main__":

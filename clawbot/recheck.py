@@ -18,6 +18,7 @@ import config
 import tracker
 import auth
 import crawler
+from cleanup import cleanup_playwright_artifacts
 import analyzer
 import downloader
 
@@ -149,6 +150,18 @@ def run():
 
     config.DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Check for cached missed IDs from a previous Phase 1 scan
+    cache_file = config.BASE_DIR / "recheck_queue.json"
+    unique_missed = None
+
+    if cache_file.exists():
+        import json
+        with open(cache_file) as f:
+            cached = json.load(f)
+        if cached:
+            unique_missed = cached
+            print(f"  Loaded {len(unique_missed)} projects from recheck_queue.json (skipping Phase 1)", flush=True)
+
     with sync_playwright() as p:
         print(f"  Connecting to Chrome at {config.CDP_URL}...")
         try:
@@ -168,40 +181,54 @@ def run():
 
         def shutdown(sig, frame):
             print(f"\n\nShutting down. Processed {total_processed}, downloaded {downloaded_count}")
+            # Save remaining queue so we can skip Phase 1 next time
+            remaining = unique_missed[total_processed:] if unique_missed else []
+            if remaining:
+                import json
+                with open(cache_file, "w") as f:
+                    json.dump(remaining, f)
+                print(f"  Saved {len(remaining)} remaining projects to recheck_queue.json")
             sys.exit(0)
         signal.signal(signal.SIGINT, shutdown)
 
-        # Phase 1: Collect all missed project IDs from search pages
-        print(f"\n--- Phase 1: Scanning pages for missed projects ---", flush=True)
-        missed_ids = []
+        # Phase 1: Collect missed IDs (skip if we have a cache)
+        if unique_missed is None:
+            print(f"\n--- Phase 1: Scanning pages for missed projects ---", flush=True)
+            missed_ids = []
 
-        for pg_num in range(1, last_page + 1):
-            try:
-                projects = crawler.get_search_projects(page, ctx, pg_num)
-                new = [pid for pid, url in projects if pid not in checked_ids]
-                if new:
-                    missed_ids.extend(new)
-                    print(f"  Page {pg_num}: {len(new)} missed", flush=True)
-                # Short delay between search pages (just scraping, not downloading)
-                time.sleep(3)
-            except Exception as e:
-                print(f"  Page {pg_num}: error ({e})", flush=True)
-                time.sleep(5)
+            for pg_num in range(1, last_page + 1):
+                try:
+                    projects = crawler.get_search_projects(page, ctx, pg_num)
+                    new = [pid for pid, url in projects if pid not in checked_ids]
+                    if new:
+                        missed_ids.extend(new)
+                        print(f"  Page {pg_num}: {len(new)} missed", flush=True)
+                    time.sleep(3)
+                except Exception as e:
+                    print(f"  Page {pg_num}: error ({e})", flush=True)
+                    time.sleep(5)
 
-        # Add known failed downloads that might not be on search pages
-        for pid in retry_ids:
-            if pid not in checked_ids and pid not in missed_ids:
-                missed_ids.append(pid)
+            # Add known failed downloads
+            for pid in retry_ids:
+                if pid not in checked_ids and pid not in missed_ids:
+                    missed_ids.append(pid)
 
-        # Deduplicate while preserving order
-        seen = set()
-        unique_missed = []
-        for pid in missed_ids:
-            if pid not in seen:
-                seen.add(pid)
-                unique_missed.append(pid)
+            # Deduplicate
+            seen = set()
+            unique_missed = []
+            for pid in missed_ids:
+                if pid not in seen:
+                    seen.add(pid)
+                    unique_missed.append(pid)
 
-        print(f"\n  Total missed projects to process: {len(unique_missed)}", flush=True)
+            # Cache for next restart
+            import json
+            with open(cache_file, "w") as f:
+                json.dump(unique_missed, f)
+
+            print(f"\n  Total missed projects to process: {len(unique_missed)}", flush=True)
+        else:
+            print(f"\n  Projects to process: {len(unique_missed)}", flush=True)
 
         if not unique_missed:
             print("  Nothing to recheck!")
@@ -238,6 +265,7 @@ def run():
         print(f"  Downloaded: {downloaded_count}", flush=True)
 
         browser.close()
+        cleanup_playwright_artifacts()
 
 
 if __name__ == "__main__":
