@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Regalia ID</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: Georgia, 'Times New Roman', serif;
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 2rem 1rem;
+    background: #f4f1ea;
+    color: #2a2420;
+    line-height: 1.5;
+  }
+  h1 { font-size: 2rem; margin: 0 0 0.25rem; }
+  .subtitle { color: #6b5d4f; font-style: italic; margin-bottom: 2rem; }
+  .upload {
+    border: 2px dashed #b8a888;
+    border-radius: 8px;
+    padding: 2rem;
+    text-align: center;
+    background: #fdfcf8;
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }
+  .upload:hover { border-color: #8a6f4c; }
+  .upload.dragover { border-color: #8a6f4c; background: #f9f5ec; }
+  .upload input { display: none; }
+  .upload p { margin: 0.5rem 0; }
+  .upload .hint { color: #8a7d6f; font-size: 0.9rem; }
+  #preview {
+    max-width: 100%;
+    max-height: 400px;
+    margin: 1rem auto;
+    display: block;
+    border-radius: 4px;
+  }
+  button {
+    background: #8a6f4c;
+    color: #fdfcf8;
+    border: none;
+    padding: 0.75rem 2rem;
+    font-size: 1rem;
+    font-family: inherit;
+    border-radius: 4px;
+    cursor: pointer;
+    margin-top: 1rem;
+  }
+  button:hover:not(:disabled) { background: #6b5639; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .result {
+    margin-top: 2rem;
+    padding: 1.5rem;
+    background: #fdfcf8;
+    border-radius: 8px;
+    border-left: 4px solid #8a6f4c;
+  }
+  .result h2 { margin: 0 0 0.5rem; font-size: 1.5rem; }
+  .confidence {
+    display: inline-block;
+    padding: 0.15rem 0.6rem;
+    border-radius: 12px;
+    font-size: 0.85rem;
+    margin-left: 0.5rem;
+    vertical-align: middle;
+  }
+  .confidence-high { background: #c8d7b8; color: #3d4f2a; }
+  .confidence-medium { background: #e8d7a8; color: #6b5000; }
+  .confidence-low { background: #e8c8b8; color: #7a3a20; }
+  .meta { color: #6b5d4f; margin: 0.25rem 0; }
+  .reasoning { margin-top: 1rem; font-style: italic; }
+  .alternatives { margin-top: 1rem; font-size: 0.9rem; color: #6b5d4f; }
+  .error { color: #8a3020; background: #f5e0d8; padding: 1rem; border-radius: 4px; margin-top: 1rem; }
+  .loading { text-align: center; margin-top: 2rem; color: #6b5d4f; font-style: italic; }
+</style>
+</head>
+<body>
+<h1>Regalia ID</h1>
+<p class="subtitle">Upload a photo of academic regalia and we'll tell you the university.</p>
+
+<label class="upload" id="dropzone">
+  <input type="file" id="fileInput" accept="image/*">
+  <p><strong>Click to upload</strong> or drag an image here</p>
+  <p class="hint">JPEG, PNG, GIF, or WebP &middot; max 10MB</p>
+</label>
+
+<img id="preview" style="display:none">
+<div style="text-align:center">
+  <button id="identifyBtn" disabled>Identify</button>
+</div>
+
+<div id="output"></div>
+
+<script>
+const fileInput = document.getElementById('fileInput');
+const dropzone = document.getElementById('dropzone');
+const preview = document.getElementById('preview');
+const btn = document.getElementById('identifyBtn');
+const output = document.getElementById('output');
+
+let currentFile = null;
+
+function setFile(file) {
+  if (!file || !file.type.startsWith('image/')) return;
+  currentFile = file;
+  const reader = new FileReader();
+  reader.onload = e => {
+    preview.src = e.target.result;
+    preview.style.display = 'block';
+  };
+  reader.readAsDataURL(file);
+  btn.disabled = false;
+  output.innerHTML = '';
+}
+
+fileInput.addEventListener('change', e => setFile(e.target.files[0]));
+
+dropzone.addEventListener('dragover', e => {
+  e.preventDefault();
+  dropzone.classList.add('dragover');
+});
+dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+dropzone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropzone.classList.remove('dragover');
+  setFile(e.dataTransfer.files[0]);
+});
+
+btn.addEventListener('click', async () => {
+  if (!currentFile) return;
+  btn.disabled = true;
+  output.innerHTML = '<div class="loading">Examining the regalia&hellip;</div>';
+
+  const formData = new FormData();
+  formData.append('image', currentFile);
+
+  try {
+    const res = await fetch('/identify', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!res.ok) {
+      output.innerHTML = `<div class="error">${data.error || 'Something went wrong'}</div>`;
+    } else {
+      renderResult(data);
+    }
+  } catch (err) {
+    output.innerHTML = `<div class="error">${err.message}</div>`;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+function renderResult(d) {
+  const uni = d.university || 'Could not identify';
+  const confClass = `confidence-${d.confidence}`;
+  const alts = (d.alternatives && d.alternatives.length)
+    ? `<div class="alternatives"><strong>Alternatives:</strong> ${d.alternatives.join(', ')}</div>`
+    : '';
+  const field = d.field_indicated
+    ? `<p class="meta"><strong>Field (from velvet color):</strong> ${d.field_indicated}</p>`
+    : '';
+  output.innerHTML = `
+    <div class="result">
+      <h2>${uni}<span class="confidence ${confClass}">${d.confidence} confidence</span></h2>
+      <p class="meta"><strong>Degree level:</strong> ${d.degree_level}</p>
+      ${field}
+      <p class="reasoning">${d.reasoning}</p>
+      ${alts}
+    </div>
+  `;
+}
+</script>
+</body>
+</html>
